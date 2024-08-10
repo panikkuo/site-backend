@@ -1,0 +1,2 @@
+C:\Users\labeya1\Desktop\C++_Posgress learn\CODERUN\restaurant\restaurant\x64\Release\restaurant.vcxproj.CopyComplete
+C:\пет-проекты\бек сайт ресторана\restaurant\x64\Release\restaurant.vcxproj.CopyComplete
