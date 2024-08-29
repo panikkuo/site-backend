@@ -13,7 +13,7 @@ typedef boost::gregorian::date Date;
 typedef boost::posix_time::time_duration Time;
 
 class User {
-public:
+public: 
     Id id;
     std::string login;
     std::string password;
@@ -107,6 +107,20 @@ public:
 };
 
 class Reservation {
+private:
+    std::string timeDurationToString(const boost::posix_time::time_duration& duration) {
+        std::string hours = std::to_string(duration.hours());
+        std::string minutes = std::to_string(duration.minutes());
+        if (minutes.length() == 1) minutes = "0" + minutes;
+        return hours + ":" + minutes;
+    }
+    std::string dateToString(const Date date) {
+        std::string day = std::to_string(date.day());
+        if (day.length() == 1) day = "0" + day;
+        std::string month = std::to_string(date.month());
+        if (month.length() == 1) month = "0" + month;
+        return day + ":" + month + ":" + std::to_string(date.year());
+    }
 public:
     Id id;
     Date date;
@@ -151,6 +165,15 @@ public:
         Time _time = boost::posix_time::duration_from_string(destinationTime);
         tableId = destinationTableId;
         userId = destinationUserId;
+    }
+    std::shared_ptr<Json::Value> GetJson() {
+        std::shared_ptr<Json::Value> json = std::make_shared<Json::Value>();
+        (*json)["id"] = id;
+        (*json)["table-id"] = tableId;
+        (*json)["user-id"] = userId;
+        (*json)["date"] = dateToString(date);
+        (*json)["time"] = timeDurationToString(time);
+        return json;
     }
 };
 

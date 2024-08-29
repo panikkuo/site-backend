@@ -5,7 +5,7 @@
 #include <memory>
 #include <Json/json.h>
 #include <future>
-#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "Objects.h"
@@ -19,6 +19,23 @@ private:
         std::string minutes = std::to_string(duration.minutes());
         if (minutes.length() == 1) minutes = "0" + minutes;
         return hours + ":" + minutes;
+    }
+
+    std::shared_ptr<Json::Value> GetFreeTables(pqxx::result tables, pqxx::result reservations) {
+        std::shared_ptr<Json::Value> jsonFreeTables = std::make_shared<Json::Value>();
+        std::unordered_set<Id>isExistReservationSet;
+        for (const auto& reservation : reservations) {
+            Reservation res;
+            res.SetPqxxRow(reservation);
+            isExistReservationSet.insert(res.id);
+        }
+        for (const auto& table : tables) {
+            Table tab;
+            tab.SetPqxxRow(table);
+            if (isExistReservationSet.find(tab.id) == isExistReservationSet.end())
+                (*jsonFreeTables)["tables"].append(tab.numberOfSeats);
+        }
+        return jsonFreeTables;
     }
 public:
     DataBaseFunctions(std::string dbname, std::string user, std::string password, std::string host, std::string port) :
@@ -164,10 +181,8 @@ public:
             }
         });
     }
-
-    std::future<bool> getJsonArrayFreeReservations(std::shared_ptr<Json::Value> jsonArray, std::string& DataBaseError, std::string date) {
-        return std::async(std::launch::async, [this, jsonArray, &DataBaseError, date]() {
-            boost::gregorian::date requestDate (boost::gregorian::from_simple_string(date));
+    std::future<bool> getJsonArrayFreeReservations(std::shared_ptr<Json::Value> jsonFreeTables, std::string& DataBaseError, std::string date, std::string time) {
+        return std::async(std::launch::async, [this, &jsonFreeTables, &DataBaseError, date, time]() {
              if (!isConnected()) {
                  DataBaseError = "Connection lost";
                  return false;
@@ -177,47 +192,17 @@ public:
                  pqxx::result reservations = txn.exec_params(
                      "SELECT id, time, date, table_id, user_id "
                      "FROM reservations "
-                     "WHERE date = $1;",
-                     boost::gregorian::to_iso_extended_string(requestDate)
+                     "WHERE date = $1 AND time = $2;",
+                     date, time
                  );
-
-                 std::unordered_map<std::string, std::vector<Reservation>> timeToReservationsMap;
-                 for (const auto& row : reservations) {
-                     Reservation reservation;
-                     reservation.SetPqxxRow(row);
-                     timeToReservationsMap[timeDurationToString(reservation.time)].push_back(reservation);
-                     //std::cout << timeDurationToString(reservation.time) << std::endl;
-                 }
 
                  pqxx::result tables = txn.exec(
                      "SELECT id, number_of_seats "
                      "FROM tables;"
                  );
 
-                 std::unordered_map<Id, Table> idToTableMap;
+                 jsonFreeTables = GetFreeTables(reservations, tables);
 
-                 for (const auto& row : tables) {
-                     Table table;
-                     table.SetPqxxRow(row);
-                     idToTableMap[table.id] = table;
-                 }
-
-                 Time startTime = boost::posix_time::hours(11);
-                 Time endTime = boost::posix_time::hours(22);
-                 Time step = boost::posix_time::minutes(30);
-                 Time reservationGap = boost::posix_time::hours(2);
-
-                 for (Time currentTime = startTime; currentTime <= endTime; currentTime += step) {
-                     std::shared_ptr<Json::Value>json = std::make_shared<Json::Value>();
-                     (*json)["time"] = timeDurationToString(currentTime);
-                     for (const auto& reserv : timeToReservationsMap[timeDurationToString(currentTime)]) 
-                         idToTableMap[reserv.tableId].reservedUntil = currentTime + reservationGap;
-
-                     for (const auto& table : idToTableMap) 
-                         if (table.second.reservedUntil <= currentTime) (*json)["number-of-seats"].append(table.second.numberOfSeats);          
-                     
-                     (*jsonArray).append(*json);
-                 }
                  txn.commit();
                  return true;
              }
@@ -237,7 +222,7 @@ public:
             try {
                 pqxx::work txn(Connection);
                 pqxx::result result = txn.exec_params(
-                    "INSERT VALUES(time, date, table_id, user_id) "
+                    "INSERT INTO reservations(time, date, table_id, user_id) "
                     "VALUES($1, $2, $3, $4)",
                     timeDurationToString(reservation.time), boost::gregorian::to_iso_extended_string(reservation.date), reservation.tableId, reservation.userId
                 );
@@ -266,6 +251,126 @@ public:
                 );
 
                 if(!result.empty()) table.SetPqxxRow(result[0]);
+
+                txn.commit();
+                return true;
+            }
+            catch (const std::exception& e) {
+                DataBaseError = e.what();
+                return false;
+            }
+        });
+    }
+    bool getIdFromLogin(const std::string login, Id& id, std::string DataBaseError) {
+        if (!isConnected()) {
+            DataBaseError = "Connection lost";
+            return false;
+        }
+        try {
+            pqxx::work txn(Connection);
+            pqxx::result result = txn.exec_params(
+                "SELECT id "
+                "FROM users "
+                "WHERE login = $1;",
+                login
+            );
+            if (!result.empty()) {
+                id = result[0]["id"].as<Id>();
+                return true;
+            }
+            else {
+                DataBaseError = "User does not exist";
+                return false;
+            }
+        }
+        catch (const std::exception& e) {
+            DataBaseError = e.what();
+            return false;
+        }
+    }
+    bool getNumberOfSeatsFromId(const Id id, int& NumberOfSeats, std::string DataBaseError) {
+        if (!isConnected()) {
+            DataBaseError = "Connection lost";
+            return false;
+        }
+        try {
+            pqxx::work txn(Connection);
+            pqxx::result result = txn.exec_params(
+                "SELECT number_of_seats "
+                "FROM tables "
+                "WHERE id = $1;",
+                id
+            );
+
+            NumberOfSeats = result[0]["number_of_seats"].as<int>();
+
+            txn.commit();
+            return true;
+        }
+        catch (const std::exception& e) {
+            DataBaseError = e.what();
+            return false;
+        }
+    }
+    std::future<bool> getUserReservationJsonArray(const std::string login, std::shared_ptr<Json::Value>jsonArray, std::string DataBaseError) {
+        return std::async(std::launch::async, [this, login, jsonArray, &DataBaseError]() {
+            if (!isConnected()) {
+                DataBaseError = "Connection lost";
+                return false;
+            }
+            try {
+                pqxx::work txn(Connection);
+
+                Id loginId;
+                bool getIdResult = getIdFromLogin(login, loginId, DataBaseError);
+                if (!getIdResult) {
+                    return false;
+                }
+
+                pqxx::result reservations = txn.exec_params(
+                    "SELECT id, time, date table_id, user_id "
+                    "FROM reservations "
+                    "WHERE user_id = $1",
+                    loginId
+                );
+
+                for (const auto& reservation : reservations) {
+                    Reservation res;
+                    res.SetPqxxRow(reservation);
+                    std::shared_ptr<Json::Value> json = res.GetJson();
+
+                    int NumberOfSeats;
+                    bool getNumberResult = getNumberOfSeatsFromId(res.id, NumberOfSeats, DataBaseError);
+                    if (!getNumberResult) {
+                        return false;
+                    }
+
+                    (*json)["number_of_seats"] = NumberOfSeats;
+                    (*jsonArray).append(*json);
+                }
+
+                return true;
+            }
+            catch (const std::exception& e) {
+                DataBaseError = e.what();
+                return false;
+            }
+        });
+    }
+    std::future<bool> deleteUserReservation(const Id id, std::string DataBaseError) {
+        return std::async(std::launch::async, [this, id, &DataBaseError]() {
+            if (!isConnected()) {
+                DataBaseError = "Connection lost";
+                return false;
+            }
+            try {
+                pqxx::work txn(Connection);
+
+                pqxx::result result = txn.exec_params(
+                    "DELETE FROM reservations "
+                    "WHERE id = $1;",
+                    id
+                );
 
                 txn.commit();
                 return true;

@@ -1,11 +1,14 @@
 #pragma once
 
 #include <drogon/drogon.h>
-#include "DataBaseMainFunctions.h"
 #include <memory>
 #include <future>
+#include <cstdio>
 
-class HandleRequestFunctions {
+#include "JwtSystem.h"
+#include "DataBaseMainFunctions.h"
+
+class HandleRequestFunctions : public JwtFunctions {
 private:
     void addCorsHeaders(drogon::HttpResponsePtr& response) {
         response->addHeader("Access-Control-Allow-Origin", "*");
@@ -19,8 +22,8 @@ private:
         std::cout << response->getBody() << std::endl;
         std::cout << "----------" << std::endl;
     }
+    
 public:
-    //TODO : переписать изменив вложенность
     void HandlePostRegisterUser(const drogon::HttpRequestPtr& request, std::function<void(const drogon::HttpResponsePtr&)>&& callback, std::shared_ptr<DataBaseFunctions> DataBaseConnection) {
         drogon::HttpResponsePtr response = drogon::HttpResponse::newHttpResponse();
         std::shared_ptr<Json::Value> jsonResult = std::make_shared<Json::Value>();
@@ -34,11 +37,11 @@ public:
                 response->setBody(jsonResult->toStyledString());
                 callback(response);
                 return;
-               
             }
             User user;
             user.SetJson(jsonRequest);
             std::string DataBaseError;
+            //TODO : ¬от здесь бы переписать осознова€ асинк ќсознал но переписать сил нет
             auto checkLoginFuture = DataBaseConnection->doesValueExist("login", user.login, DataBaseError);
             auto checkEmailFuture = DataBaseConnection->doesValueExist("email", user.email, DataBaseError);
             auto checkPhoneFuture = DataBaseConnection->doesValueExist("phone", user.phone, DataBaseError);
@@ -98,22 +101,21 @@ public:
         if (request->method() == drogon::Post) {
             std::shared_ptr<Json::Value> jsonRequest = request->getJsonObject();
 
-            if (jsonRequest) {
+            if (!jsonRequest) {
                 response->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
                 (*jsonResult)["result"] = "Json is invalid";
                 response->setBody(jsonResult->toStyledString());
                 OutputResponse(response);
                 callback(response); 
                 return;
-                
             }
 
-            std::string check_login = (*jsonRequest)["login"].as<std::string>();
+            std::string checkLogin = (*jsonRequest)["login"].as<std::string>();
             std::string check_password = (*jsonRequest)["password"].as<std::string>();
             std::string DataBaseError;
             User user;
 
-            auto getUserInfoFuture = DataBaseConnection->getUserInfo(check_login, user, DataBaseError);
+            auto getUserInfoFuture = DataBaseConnection->getUserInfo(checkLogin, user, DataBaseError);
             bool userInfoFetched = getUserInfoFuture.get();
 
             if (!userInfoFetched) {
@@ -125,7 +127,7 @@ public:
                 return;
 
             }
-            if (!user.isEmptyUser && user.password == check_password) {
+            if (user.isEmptyUser || user.password != check_password) {
                 response->setStatusCode(drogon::HttpStatusCode::k409Conflict);
                 (*jsonResult)["result"] = "Incorrect login or password";
                 response->setBody(jsonResult->toStyledString());
@@ -133,7 +135,8 @@ public:
                 callback(response);
                 return;
             }
-
+            std::string token = GetToken(checkLogin);
+            response->addHeader("token", token);
             response->setStatusCode(drogon::HttpStatusCode::k200OK);
             (*jsonResult)["result"] = "Success";
             response->setBody(jsonResult->toStyledString());
@@ -203,7 +206,6 @@ public:
                 OutputResponse(response);
                 callback(response);
                 return;
-
             }
 
             response->setStatusCode(drogon::HttpStatusCode::k200OK);
@@ -226,7 +228,7 @@ public:
         }    
     }
 
-    void HandleGetMenu(const drogon::HttpRequestPtr& request, std::function<void(const drogon::HttpResponsePtr&)>&& callback, std::shared_ptr<DataBaseFunctions> DataBaseConnection) {
+    void HandleGetMenu(const drogon::HttpRequestPtr& request, std::function<void(const drogon::HttpResponsePtr&)>&& callback, std::shared_ptr<DataBaseFunctions> DataBaseConnection){
         drogon::HttpResponsePtr response = drogon::HttpResponse::newHttpResponse();
         std::shared_ptr<Json::Value>jsonResult = std::make_shared<Json::Value>();
         addCorsHeaders(response);
@@ -261,7 +263,7 @@ public:
         }
     }
 
-    void HandleGetReservation(const drogon::HttpRequestPtr& request, std::function<void(const drogon::HttpResponsePtr&)>&& callback, std::shared_ptr<DataBaseFunctions> DataBaseConnection, std::string date) {
+    void HandleGetReservation(const drogon::HttpRequestPtr& request, std::function<void(const drogon::HttpResponsePtr&)>&& callback, std::shared_ptr<DataBaseFunctions> DataBaseConnection, std::string date, std::string time) {
         drogon::HttpResponsePtr response = drogon::HttpResponse::newHttpResponse();
         std::shared_ptr<Json::Value>jsonResult = std::make_shared<Json::Value>();
         addCorsHeaders(response);
@@ -271,7 +273,7 @@ public:
 
             std::string DataBaseError;
 
-            auto getFreeReservationFuture = DataBaseConnection->getJsonArrayFreeReservations(jsonArray, DataBaseError, date);
+            auto getFreeReservationFuture = DataBaseConnection->getJsonArrayFreeReservations(jsonArray, DataBaseError, date, time);
             bool reservationFetched = getFreeReservationFuture.get();
 
             if (!reservationFetched) {
@@ -316,8 +318,19 @@ public:
                 return;
             }
 
+
             std::string login = (*jsonRequest)["login"].as<std::string>();
+            std::string token = request->getHeader("token");
+            if (token == "" || !CheckUserLoginToken(token, login)) {
+                response->setStatusCode(drogon::HttpStatusCode::k403Forbidden);
+                (*jsonResult)["result"] = "User is not authorized";
+                response->setBody(jsonResult->toStyledString());
+                OutputResponse(response);
+                callback(response);
+                return;
+            }
             User user;
+
             auto getUserInfoFuture = DataBaseConnection->getUserInfo(login, user, DataBaseError);
             bool userFetched = getUserInfoFuture.get();
 
@@ -373,13 +386,91 @@ public:
             OutputResponse(response);   callback(response);
             
         }
-        else if (request->getMethod() == drogon::Delete) {
-            //TODO : разобравтьс€ и допсиать
+        else if (request->getMethod() == drogon::Options) {
+            response->setStatusCode(drogon::HttpStatusCode::k200OK);
+            OutputResponse(response);
+            callback(response);
+        }
+        else {
+            response->setStatusCode(drogon::HttpStatusCode::k405MethodNotAllowed);
+            (*jsonResult)["result"] = "Method not allowed";
+            response->setBody(jsonResult->toStyledString());
+            OutputResponse(response);
+            callback(response);
+        }
+    }
+    void HandleGetUserReservation(const drogon::HttpRequestPtr& request, std::function<void(const drogon::HttpResponsePtr&)>&& callback, std::shared_ptr<DataBaseFunctions> DataBaseConnection, const std::string& userLogin) {
+        drogon::HttpResponsePtr response = drogon::HttpResponse::newHttpResponse();
+        std::shared_ptr<Json::Value>jsonResult = std::make_shared<Json::Value>();
+        addCorsHeaders(response);
+
+        if (request->getMethod() == drogon::Get) {
+            std::shared_ptr<Json::Value>jsonArray = std::make_shared<Json::Value>(Json::arrayValue);
+
+            std::string DataBaseError;
+            auto getUserReservationFututre = DataBaseConnection->getUserReservationJsonArray(userLogin, jsonArray, DataBaseError);
+            bool getUserReservationFetched = getUserReservationFututre.get();
+
+            if (!getUserReservationFetched) {
+                response->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
+                (*jsonResult)["result"] = DataBaseError;
+                response->setBody(jsonResult->toStyledString());
+                OutputResponse(response);
+                callback(response);
+                return;
+            }
+
+            response->setStatusCode(drogon::HttpStatusCode::k200OK);
+            response->setBody(jsonArray->toStyledString());
             OutputResponse(response);
             callback(response);
         }
         else if (request->getMethod() == drogon::Options) {
             response->setStatusCode(drogon::HttpStatusCode::k200OK);
+            OutputResponse(response);
+            callback(response);
+        }
+        else {
+            response->setStatusCode(drogon::HttpStatusCode::k405MethodNotAllowed);
+            (*jsonResult)["result"] = "Method not allowed";
+            response->setBody(jsonResult->toStyledString());
+            OutputResponse(response);
+            callback(response);
+        }
+    }
+    void HandleDeleteUserReservation(const drogon::HttpRequestPtr& request, std::function<void(const drogon::HttpResponsePtr&)>&& callback, std::shared_ptr<DataBaseFunctions> DataBaseConnection, const std::string& userLogin, const Id id) {
+        drogon::HttpResponsePtr response = drogon::HttpResponse::newHttpResponse();
+        std::shared_ptr<Json::Value>jsonResult = std::make_shared<Json::Value>();
+        addCorsHeaders(response);
+
+        if (request->getMethod() == drogon::Delete) {
+            std::string DataBaseError;
+            auto getUserReservationFututre = DataBaseConnection->deleteUserReservation(id, DataBaseError);
+            bool getUserReservationFetched = getUserReservationFututre.get();
+
+            if (!getUserReservationFetched) {
+                response->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
+                (*jsonResult)["result"] = DataBaseError;
+                response->setBody(jsonResult->toStyledString());
+                OutputResponse(response);
+                callback(response);
+                return;
+            }
+
+            response->setStatusCode(drogon::HttpStatusCode::k200OK);
+            (*jsonResult)["result"] = "Reservation was deleted successfully";
+            OutputResponse(response);
+            callback(response);
+        }
+        else if (request->getMethod() == drogon::Options) {
+            response->setStatusCode(drogon::HttpStatusCode::k200OK);
+            OutputResponse(response);
+            callback(response);
+        }
+        else {
+            response->setStatusCode(drogon::HttpStatusCode::k405MethodNotAllowed);
+            (*jsonResult)["result"] = "Method not allowed";
+            response->setBody(jsonResult->toStyledString());
             OutputResponse(response);
             callback(response);
         }
