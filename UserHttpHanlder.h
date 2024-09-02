@@ -6,9 +6,9 @@
 #include <cstdio>
 
 #include "JwtSystem.h"
-#include "DataBaseMainFunctions.h"
+#include "DataBase.h"
 
-class HandleRequestFunctions : public JwtFunctions {
+class UserHttpHandlerFunctions : public JwtFunctions {
 private:
     void addCorsHeaders(drogon::HttpResponsePtr& response) {
         response->addHeader("Access-Control-Allow-Origin", "*");

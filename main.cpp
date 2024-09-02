@@ -11,12 +11,12 @@
 #include <iostream>
 #include <drogon/HttpFilter.h>
 
-#include "Objects.h"
-#include "DataBaseMainFunctions.h"
-#include "HttpHanlderFunctions.h"
+#include "Objects.h" 
+#include "DataBase.h"
+#include "UserHttpHanlder.h"
 
 std::shared_ptr<DataBaseFunctions> DataBaseConnection;
-std::shared_ptr<HandleRequestFunctions> handleRequest;
+std::shared_ptr<UserHttpHandlerFunctions> handleRequest;
 
 void SetMethods() {
 	drogon::app().registerHandler(
